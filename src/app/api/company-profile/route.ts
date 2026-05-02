@@ -120,47 +120,44 @@ async function lookupWikidata(name: string) {
 
 // ── Bright Data LinkedIn company ──────────────────────────────────────────────
 
-async function findLinkedInCompanyUrl(name: string): Promise<string | null> {
-  try {
-    const res = await fetch(
-      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`${name} site:linkedin.com/company`)}`,
-      { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html' } }
-    )
-    if (!res.ok) return null
-    const html = await res.text()
-    const matches = [...html.matchAll(/uddg=(https?%3A%2F%2F(?:www\.)?linkedin\.com%2Fcompany%2F([a-zA-Z0-9\-_%]+))/g)]
-    for (const m of matches) {
-      try {
-        const { hostname, pathname } = new URL(decodeURIComponent(m[1]))
-        if (hostname.includes('linkedin.com') && pathname.startsWith('/company/'))
-          return `https://www.linkedin.com${pathname.split('/').slice(0, 3).join('/')}`
-      } catch { continue }
-    }
-    const direct = html.match(/https?:\/\/(?:www\.)?linkedin\.com\/company\/([a-zA-Z0-9\-_%]{2,80})(?:\/|"|'|&)/)
-    if (direct) return `https://www.linkedin.com/company/${direct[1]}`
-  } catch { /* fall through */ }
-  return null
+// Generate plausible LinkedIn company slug variants from a company name
+function linkedInSlugs(name: string): string[] {
+  const suffixes = /\b(inc|llc|corp|ltd|co|company|group|holdings|international|global|services|solutions|technologies|technology)\b\.?/gi
+  const clean = name.replace(suffixes, '').replace(/\s+/g, ' ').trim()
+  const toSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  return [...new Set([toSlug(name), toSlug(clean), name.toLowerCase().replace(/[^a-z0-9]/g, '')].filter(Boolean))]
 }
 
-async function scrapeLinkedInCompany(linkedInUrl: string) {
+async function scrapeLinkedInCompany(companyName: string) {
   const empty = { name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }
   const apiToken = process.env.BRIGHTDATA_API_TOKEN
   const datasetId = process.env.BRIGHTDATA_LINKEDIN_COMPANY_DATASET_ID
   if (!apiToken || !datasetId) return empty
+
+  // Try slug guessing first — avoids DuckDuckGo search entirely
+  const slugs = linkedInSlugs(companyName)
+  const urls = slugs.map((s) => ({ url: `https://www.linkedin.com/company/${s}` }))
+
   try {
     const res = await fetch(
       `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${datasetId}&notify=false&include_errors=true`,
       {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: [{ url: linkedInUrl }] }),
-        signal: AbortSignal.timeout(30000),
+        body: JSON.stringify({ input: urls }),
+        signal: AbortSignal.timeout(45000),
       }
     )
-    if (!res.ok) return empty
+    if (!res.ok) {
+      console.error('[company-profile] LinkedIn BD error:', res.status)
+      return empty
+    }
     const data = await res.json()
-    const p = Array.isArray(data) ? data[0] : data
-    if (!p || p.error) return empty
+    const results = Array.isArray(data) ? data : [data]
+
+    // Take first result that has a name (slug matched a real company)
+    const p = results.find((r) => r && !r.error && r.name)
+    if (!p) return empty
 
     const rawDesc: string = p.description ?? ''
     const description = rawDesc.replace(/^[^|]+\|\s*[\d,.]+ followers on LinkedIn\.\s*/i, '').trim() || null
@@ -171,14 +168,7 @@ async function scrapeLinkedInCompany(linkedInUrl: string) {
       if (!isNaN(n)) employee_count = n >= 1000 ? `${(n / 1000).toFixed(0)}K+` : String(n)
     }
 
-    return {
-      name: p.name ?? null,
-      description,
-      employee_count,
-      hq: p.headquarters ?? null,
-      logo_url: p.logo ?? null,
-      website_url: p.website ?? null,
-    }
+    return { name: p.name ?? null, description, employee_count, hq: p.headquarters ?? null, logo_url: p.logo ?? null, website_url: p.website ?? null }
   } catch (e) {
     console.error('[company-profile] LinkedIn scrape error:', e instanceof Error ? e.message : e)
     return empty
@@ -267,9 +257,7 @@ export async function GET(request: Request) {
     // Run all lookups in parallel — no browser needed
     const [wikidata, linkedInData] = await Promise.all([
       name ? lookupWikidata(name) : Promise.resolve({ website: null, revenue: null, employee_count: null, founded_year: null, hq: null }),
-      name
-        ? findLinkedInCompanyUrl(name).then((url) => url ? scrapeLinkedInCompany(url) : { name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null })
-        : Promise.resolve({ name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }),
+      name ? scrapeLinkedInCompany(name) : Promise.resolve({ name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }),
     ])
 
     if (!websiteUrl) websiteUrl = linkedInData.website_url || wikidata.website
