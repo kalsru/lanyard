@@ -57,15 +57,15 @@ function linkedInSlugs(name: string): string[] {
   return [...new Set([toSlug(name), toSlug(clean), name.toLowerCase().replace(/[^a-z0-9]/g, '')].filter(Boolean))]
 }
 
-async function scrapeLinkedInCompany(companyName: string) {
+async function scrapeLinkedInCompany(companyNameOrUrl: string) {
   const empty = { name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }
   const apiToken = process.env.BRIGHTDATA_API_TOKEN
   const datasetId = process.env.BRIGHTDATA_LINKEDIN_COMPANY_DATASET_ID
   if (!apiToken || !datasetId) return empty
 
-  // Try slug guessing first — avoids DuckDuckGo search entirely
-  const slugs = linkedInSlugs(companyName)
-  const urls = slugs.map((s) => ({ url: `https://www.linkedin.com/company/${s}` }))
+  const urls = companyNameOrUrl.startsWith('http')
+    ? [{ url: companyNameOrUrl }]
+    : linkedInSlugs(companyNameOrUrl).map((s) => ({ url: `https://www.linkedin.com/company/${s}` }))
 
   try {
     const res = await fetch(
