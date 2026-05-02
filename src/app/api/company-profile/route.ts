@@ -47,77 +47,6 @@ function isSkipped(href: string): boolean {
   } catch { return true }
 }
 
-function formatMoney(amount: string, unit: string): string | null {
-  const num = Math.abs(parseFloat(amount))
-  if (isNaN(num) || num === 0) return null
-  const symbol = unit.includes('Q4916') ? '€' : unit.includes('Q25224') ? '£' : '$'
-  if (num >= 1e9) return `${symbol}${(num / 1e9).toFixed(1)}B`
-  if (num >= 1e6) return `${symbol}${(num / 1e6).toFixed(0)}M`
-  return `${symbol}${num.toLocaleString()}`
-}
-
-function formatEmployees(amount: string): string | null {
-  const num = Math.round(parseFloat(amount))
-  if (isNaN(num) || num === 0) return null
-  if (num >= 1000) return `${(num / 1000).toFixed(0)}K+`
-  return String(num)
-}
-
-// ── Wikidata ──────────────────────────────────────────────────────────────────
-
-async function lookupWikidata(name: string) {
-  const empty = { website: null, revenue: null, employee_count: null, founded_year: null, hq: null }
-  try {
-    const searchRes = await fetch(
-      `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(name)}&language=en&type=item&format=json&limit=3&origin=*`,
-      { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0' } }
-    )
-    if (!searchRes.ok) return empty
-    const { search = [] } = await searchRes.json()
-
-    for (const entity of search) {
-      const entityRes = await fetch(
-        `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${entity.id}&props=claims|labels&languages=en&format=json&origin=*`,
-        { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0' } }
-      )
-      if (!entityRes.ok) continue
-      const wd = (await entityRes.json()).entities?.[entity.id]
-      if (!wd) continue
-      const c = wd.claims ?? {}
-
-      const p856 = c.P856?.[0]?.mainsnak?.datavalue?.value
-      let website: string | null = null
-      if (p856 && !isSkipped(p856)) {
-        try { const { protocol, hostname } = new URL(p856); if (['http:', 'https:'].includes(protocol)) website = `${protocol}//${hostname}` } catch { /* skip */ }
-      }
-
-      const rev = c.P2139?.[0]?.mainsnak?.datavalue?.value
-      const revenue = rev?.amount ? formatMoney(rev.amount, rev.unit ?? '') : null
-
-      const emp = c.P1128?.[0]?.mainsnak?.datavalue?.value
-      const employee_count = emp?.amount ? formatEmployees(emp.amount) : null
-
-      const inc = c.P571?.[0]?.mainsnak?.datavalue?.value
-      const founded_year = inc?.time ? (inc.time.match(/\+(\d{4})/)?.[1] ?? null) : null
-
-      let hq: string | null = null
-      const hqId = c.P159?.[0]?.mainsnak?.datavalue?.value?.id
-      if (hqId) {
-        try {
-          const hqRes = await fetch(
-            `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${hqId}&props=labels&languages=en&format=json&origin=*`,
-            { signal: AbortSignal.timeout(5000), headers: { 'User-Agent': 'Lanyard/1.0' } }
-          )
-          if (hqRes.ok) hq = (await hqRes.json()).entities?.[hqId]?.labels?.en?.value ?? null
-        } catch { /* skip */ }
-      }
-
-      if (website || revenue || employee_count) return { website, revenue, employee_count, founded_year, hq }
-    }
-  } catch { /* fall through */ }
-  return empty
-}
-
 // ── Bright Data LinkedIn company ──────────────────────────────────────────────
 
 // Generate plausible LinkedIn company slug variants from a company name
@@ -275,16 +204,13 @@ export async function GET(request: Request) {
       return scrapeLinkedInCompany(companyName)
     }
 
-    // Run all lookups in parallel — no browser needed
-    const [wikidata, linkedInData] = await Promise.all([
-      name ? lookupWikidata(name) : Promise.resolve({ website: null, revenue: null, employee_count: null, founded_year: null, hq: null }),
-      name ? getLinkedInCompanyData(name) : Promise.resolve({ name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }),
-    ])
+    const linkedInData = name
+      ? await getLinkedInCompanyData(name)
+      : { name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }
 
-    if (!websiteUrl) websiteUrl = linkedInData.website_url || wikidata.website
+    if (!websiteUrl) websiteUrl = linkedInData.website_url
     if (!websiteUrl) websiteUrl = await findWebsiteForCompany(name!)
 
-    // Use LinkedIn description + name to classify industry/SIC via Claude (text only, no scraping)
     const description = linkedInData.description
     const classification = description
       ? await classifyWithClaude(linkedInData.name ?? name ?? domain, description)
@@ -297,10 +223,10 @@ export async function GET(request: Request) {
       industry: classification.industry,
       sic_code: classification.sic_code,
       sic_description: classification.sic_description,
-      revenue: wikidata.revenue,
-      employee_count: linkedInData.employee_count || wikidata.employee_count,
-      founded_year: wikidata.founded_year,
-      hq: linkedInData.hq || wikidata.hq,
+      revenue: null,
+      employee_count: linkedInData.employee_count,
+      founded_year: null,
+      hq: linkedInData.hq,
       logo_url: linkedInData.logo_url,
       website_url: websiteUrl,
     }
