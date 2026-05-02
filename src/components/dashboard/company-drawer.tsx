@@ -161,74 +161,66 @@ export function CompanyDrawer({ companyName, companyUrl, onClose }: Props) {
             </div>
           )}
 
-          {profile && !loading && (
-            <>
-              {/* Badges */}
-              <div className="flex flex-wrap gap-2">
-                {profile.industry && (
-                  <span className="text-xs font-bold px-3 py-1 rounded-full bg-violet-100 text-violet-700">
-                    {profile.industry}
-                  </span>
-                )}
-                {profile.sic_code && (
-                  <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-mono">
-                    SIC {profile.sic_code}
-                  </span>
-                )}
-              </div>
-
-              {/* SIC description */}
-              {profile.sic_description && (
-                <p className="text-xs text-slate-400 -mt-3 pl-1">{profile.sic_description}</p>
-              )}
-
-              {/* Description */}
-              {profile.description && (
-                <p className="text-sm text-slate-600 leading-relaxed">{profile.description}</p>
-              )}
-
-              {/* Metadata grid */}
-              <div className="flex flex-col gap-3 border-t border-slate-100 pt-4">
-                {profile.revenue && (
-                  <MetaRow icon={<DollarSign className="h-4 w-4" />} label="Revenue" value={profile.revenue} />
-                )}
-                {profile.employee_count && (
-                  <MetaRow icon={<Users className="h-4 w-4" />} label="Employees" value={profile.employee_count} />
-                )}
-                {profile.hq && (
-                  <MetaRow icon={<MapPin className="h-4 w-4" />} label="Headquarters" value={profile.hq} />
-                )}
-                {profile.founded_year && (
-                  <MetaRow icon={<Calendar className="h-4 w-4" />} label="Founded" value={profile.founded_year} />
-                )}
-                {websiteUrl && (
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 shrink-0 text-slate-400"><Globe className="h-4 w-4" /></div>
-                    <div>
-                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Website</p>
-                      <a href={websiteUrl} target="_blank" rel="noopener noreferrer"
-                        className="text-sm text-violet-600 hover:underline font-medium truncate block max-w-[220px]">
-                        {websiteUrl.replace(/^https?:\/\//, '')}
-                      </a>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* CTA */}
-              {websiteUrl && (
+          {profile && !loading && (() => {
+            const hasData = profile.description || profile.industry || profile.hq || profile.revenue || websiteUrl
+            if (!hasData) return (
+              <div className="flex flex-col items-center text-center py-6 gap-3">
+                <Building2 className="h-8 w-8 text-slate-200" />
+                <p className="text-sm text-slate-400">No profile data found for this company.</p>
                 <a
-                  href={websiteUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-sm font-bold transition-colors"
+                  href={`https://www.google.com/search?q=${encodeURIComponent(companyName)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-xs font-semibold text-violet-600 hover:underline"
                 >
-                  <Globe className="h-4 w-4" />
-                  Visit Website
+                  <Globe className="h-3.5 w-3.5" /> Search on Google
                 </a>
-              )}
-            </>
-          )}
+              </div>
+            )
+            return (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {profile.industry && (
+                    <span className="text-xs font-bold px-3 py-1 rounded-full bg-violet-100 text-violet-700">{profile.industry}</span>
+                  )}
+                  {profile.sic_code && (
+                    <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-mono">SIC {profile.sic_code}</span>
+                  )}
+                </div>
+                {profile.sic_description && <p className="text-xs text-slate-400 -mt-3 pl-1">{profile.sic_description}</p>}
+                {profile.description && <p className="text-sm text-slate-600 leading-relaxed">{profile.description}</p>}
+                <div className="flex flex-col gap-3 border-t border-slate-100 pt-4">
+                  {profile.revenue && <MetaRow icon={<DollarSign className="h-4 w-4" />} label="Revenue" value={profile.revenue} />}
+                  {profile.employee_count && <MetaRow icon={<Users className="h-4 w-4" />} label="Employees" value={profile.employee_count} />}
+                  {profile.hq && <MetaRow icon={<MapPin className="h-4 w-4" />} label="Headquarters" value={profile.hq} />}
+                  {profile.founded_year && <MetaRow icon={<Calendar className="h-4 w-4" />} label="Founded" value={profile.founded_year} />}
+                  {websiteUrl && (
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 shrink-0 text-slate-400"><Globe className="h-4 w-4" /></div>
+                      <div>
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Website</p>
+                        <a href={websiteUrl} target="_blank" rel="noopener noreferrer"
+                          className="text-sm text-violet-600 hover:underline font-medium truncate block max-w-[220px]">
+                          {websiteUrl.replace(/^https?:\/\//, '')}
+                        </a>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {websiteUrl ? (
+                  <a href={websiteUrl} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-sm font-bold transition-colors">
+                    <Globe className="h-4 w-4" /> Visit Website
+                  </a>
+                ) : (
+                  <a href={`https://www.google.com/search?q=${encodeURIComponent(companyName)}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-bold transition-colors">
+                    <Globe className="h-4 w-4" /> Search on Google
+                  </a>
+                )}
+              </>
+            )
+          })()}
         </div>
       </div>
     </>
