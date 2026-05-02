@@ -50,54 +50,51 @@ function isSkipped(href: string): boolean {
 }
 
 async function findWebsiteForCompany(name: string): Promise<string | null> {
-  // First try guessing the domain directly (works for most well-known companies)
+  // 1. DuckDuckGo Instant Answer API — free JSON API, no browser, no bot detection
+  try {
+    const ddgRes = await fetch(
+      `https://api.duckduckgo.com/?q=${encodeURIComponent(name)}&format=json&no_redirect=1&no_html=1&skip_disambig=1`,
+      { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0' } }
+    )
+    if (ddgRes.ok) {
+      const ddg = await ddgRes.json()
+      const official = ddg.AbstractURL || ddg.OfficialSite || ddg.Redirect
+      if (official && !isSkipped(official)) {
+        const { protocol, hostname } = new URL(official)
+        if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
+      }
+    }
+  } catch { /* fall through */ }
+
+  // 2. Bing Web Search API if key is configured
+  const bingKey = process.env.BING_SEARCH_API_KEY
+  if (bingKey) {
+    try {
+      const bingRes = await fetch(
+        `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(`${name} official website`)}&count=5&mkt=en-US`,
+        { signal: AbortSignal.timeout(8000), headers: { 'Ocp-Apim-Subscription-Key': bingKey } }
+      )
+      if (bingRes.ok) {
+        const bing = await bingRes.json()
+        for (const result of bing.webPages?.value ?? []) {
+          const href: string = result.url
+          if (href && !isSkipped(href)) {
+            const { protocol, hostname } = new URL(href)
+            if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
+          }
+        }
+      }
+    } catch { /* fall through */ }
+  }
+
+  // 3. Domain guess — works for simple well-known names (e.g. "Henry Schein" → henryschein.com)
   const guessed = name.toLowerCase().replace(/[^a-z0-9]+/g, '') + '.com'
   try {
     const res = await fetch(`https://${guessed}`, { method: 'HEAD', signal: AbortSignal.timeout(5000) })
     if (res.ok || res.status < 400) return `https://${guessed}`
-  } catch { /* not reachable, fall through */ }
+  } catch { /* not reachable */ }
 
-  // Fall back to DuckDuckGo HTML search (lighter bot detection than Google)
-  const browser = await chromium.launch({
-    headless: true,
-    ...(EXECUTABLE_PATH && { executablePath: EXECUTABLE_PATH }),
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  })
-  try {
-    const page = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 900 },
-    }).then((c) => c.newPage())
-
-    await page.goto(
-      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`${name} official website`)}`,
-      { waitUntil: 'domcontentloaded', timeout: 20000 },
-    )
-    await page.waitForTimeout(1000)
-
-    const candidates = await page.evaluate(() =>
-      (Array.from(document.querySelectorAll('a.result__url, a[href*="uddg="]')) as HTMLAnchorElement[])
-        .map((a) => {
-          // DuckDuckGo wraps URLs in redirect links — extract real URL
-          const href = a.getAttribute('href') ?? ''
-          const match = href.match(/uddg=([^&]+)/)
-          if (match) { try { return decodeURIComponent(match[1]) } catch { return null } }
-          return a.textContent?.trim() ? `https://${a.textContent.trim()}` : null
-        })
-        .filter((h): h is string => !!h && h.startsWith('http'))
-    )
-    for (const href of candidates) {
-      if (!isSkipped(href)) {
-        try {
-          const { protocol, hostname } = new URL(href)
-          if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
-        } catch { continue }
-      }
-    }
-    return null
-  } finally {
-    await browser.close().catch(() => {})
-  }
+  return null
 }
 
 async function scrapeCompany(websiteUrl: string, domain: string): Promise<CompanyProfile> {
