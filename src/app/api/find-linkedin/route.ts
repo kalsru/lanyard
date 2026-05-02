@@ -30,11 +30,13 @@ async function searchLinkedInUrl(name: string, company: string | null, title: st
   return null
 }
 
-// Use Bright Data to scrape a LinkedIn profile URL — returns avatar and whether name verified
-async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string): Promise<{ avatar_url: string | null; verified: boolean }> {
+// Use Bright Data to scrape a LinkedIn profile URL.
+// Returns avatar_url and mismatch=true only when a profile was found but name doesn't match.
+// Scrape failures leave mismatch=false so the URL is still trusted.
+async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string): Promise<{ avatar_url: string | null; mismatch: boolean }> {
   const apiToken = process.env.BRIGHTDATA_API_TOKEN
   const datasetId = process.env.BRIGHTDATA_LINKEDIN_DATASET_ID
-  if (!apiToken || !datasetId) return { avatar_url: null, verified: false }
+  if (!apiToken || !datasetId) return { avatar_url: null, mismatch: false }
 
   try {
     const res = await fetch(
@@ -46,27 +48,34 @@ async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string):
         signal: AbortSignal.timeout(45000),
       }
     )
-    if (!res.ok) return { avatar_url: null, verified: false }
+    if (!res.ok) return { avatar_url: null, mismatch: false }
     const data = await res.json()
     const results: unknown[] = Array.isArray(data) ? data : [data]
+
+    // Filter out error entries
+    const profiles = results.filter((r): r is Record<string, unknown> =>
+      !!r && typeof r === 'object' && !(r as Record<string, unknown>).error
+    )
+    if (profiles.length === 0) return { avatar_url: null, mismatch: false }
 
     const nameLower = attendeeName.toLowerCase()
     const [first, ...rest] = nameLower.split(' ')
     const last = rest[rest.length - 1] ?? ''
-    const p = results.find((r: unknown) => {
-      if (!r || typeof r !== 'object') return false
-      const row = r as Record<string, unknown>
-      if (row.error) return false
+
+    const matched = profiles.find((row) => {
       const rName = String(row.name ?? '').toLowerCase()
       return rName.includes(first) && (!last || rName.includes(last))
-    }) as Record<string, unknown> | undefined
+    })
 
-    if (!p) return { avatar_url: null, verified: false }
-    return {
-      avatar_url: (p.avatar ?? p.profile_image_url ?? p.img_url ?? null) as string | null,
-      verified: true,
+    if (!matched) {
+      // Got a real profile back but name doesn't match — wrong person
+      return { avatar_url: null, mismatch: true }
     }
-  } catch { return { avatar_url: null, verified: false } }
+    return {
+      avatar_url: (matched.avatar ?? matched.profile_image_url ?? matched.img_url ?? null) as string | null,
+      mismatch: false,
+    }
+  } catch { return { avatar_url: null, mismatch: false } }
 }
 
 async function findLinkedIn(attendee: Input): Promise<Result> {
@@ -78,10 +87,10 @@ async function findLinkedIn(attendee: Input): Promise<Result> {
   console.log('[linkedin]', linkedin_url ? `Found: ${linkedin_url}` : `No URL for: ${attendee.name}`)
   if (!linkedin_url) return { id: attendee.id, linkedin_url: null, avatar_url: null }
 
-  // 2. Scrape profile via Bright Data — verify name matches before trusting the URL
-  const { avatar_url, verified } = await scrapeLinkedInProfile(linkedin_url, attendee.name)
+  // 2. Scrape profile via Bright Data — discard URL only on confirmed name mismatch
+  const { avatar_url, mismatch } = await scrapeLinkedInProfile(linkedin_url, attendee.name)
 
-  if (!verified) {
+  if (mismatch) {
     console.log('[linkedin] Name mismatch, discarding URL for:', attendee.name)
     return { id: attendee.id, linkedin_url: null, avatar_url: null }
   }
