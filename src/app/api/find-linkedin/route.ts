@@ -69,11 +69,16 @@ async function scrapeLinkedInProfile(linkedInUrl: string): Promise<{ avatar_url:
 
     console.log('[linkedin] Bright Data profile keys:', Object.keys(p))
 
+    // Bright Data LinkedIn schema: avatar, position, city, current_company (array)
+    const company = Array.isArray(p.current_company)
+      ? p.current_company[0]?.company ?? null
+      : p.current_company?.company ?? null
+
     return {
-      avatar_url: p.profile_image_url ?? p.img_url ?? p.avatar ?? p.photo ?? null,
-      title: p.headline ?? p.job_title ?? p.title ?? p.current_title ?? null,
-      company: p.current_company_name ?? p.company ?? p.organization ?? null,
-      location: p.location ?? p.city ?? null,
+      avatar_url: p.avatar ?? p.profile_image_url ?? p.img_url ?? null,
+      title: p.position ?? p.headline ?? p.job_title ?? null,
+      company,
+      location: p.city ?? p.location ?? null,
     }
   } catch (e) {
     console.error('[linkedin] Bright Data fetch error:', e instanceof Error ? e.message : e)
