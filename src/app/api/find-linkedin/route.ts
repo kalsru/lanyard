@@ -1,89 +1,99 @@
-import { chromium } from 'playwright'
 import { NextResponse } from 'next/server'
 
 export const maxDuration = 120
 
-const EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined
-
 type Input = { id: string; name: string; title: string | null; company: string | null; location: string | null }
 type Result = { id: string; linkedin_url: string | null; avatar_url: string | null }
 
-function launchBrowser() {
-  return chromium.launch({
-    headless: true,
-    ...(EXECUTABLE_PATH && { executablePath: EXECUTABLE_PATH }),
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  })
-}
-
-const BROWSER_CONTEXT = {
-  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  viewport: { width: 1280, height: 900 } as const,
-}
-
-async function searchForLinkedIn(name: string, extras: string[]): Promise<string | null> {
-  const query = [`"${name}"`, ...extras, 'site:linkedin.com/in'].join(' ')
-  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=5`
-
-  console.log('[linkedin] Query:', query)
-
-  const browser = await launchBrowser()
+// Search DuckDuckGo HTML for a LinkedIn profile URL — no browser needed
+async function searchLinkedInUrl(name: string, company: string | null): Promise<string | null> {
+  const query = [name, company, 'site:linkedin.com/in'].filter(Boolean).join(' ')
   try {
-    const page = await browser.newContext(BROWSER_CONTEXT).then((c) => c.newPage())
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 })
-    await page.waitForTimeout(1500)
-
-    return await page.evaluate(() => {
-      for (const a of Array.from(document.querySelectorAll('a[href]')) as HTMLAnchorElement[]) {
-        const m = a.href.match(/https?:\/\/(?:[a-z]{2,3}\.)?linkedin\.com\/in\/([a-zA-Z0-9\-_%]{3,})/)
-        if (m) return `https://www.linkedin.com/in/${m[1]}`
+    const res = await fetch(
+      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+      {
+        signal: AbortSignal.timeout(10000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html',
+        },
       }
-      return null
-    })
-  } finally {
-    await browser.close().catch(() => {})
-  }
+    )
+    if (!res.ok) return null
+    const html = await res.text()
+
+    // Extract LinkedIn profile URLs from DuckDuckGo redirect links
+    const matches = [...html.matchAll(/uddg=(https?%3A%2F%2F(?:www\.)?linkedin\.com%2Fin%2F([a-zA-Z0-9\-_%]+))/g)]
+    for (const m of matches) {
+      try {
+        const url = decodeURIComponent(m[1])
+        const { hostname, pathname } = new URL(url)
+        if (hostname.includes('linkedin.com') && pathname.startsWith('/in/')) {
+          return `https://www.linkedin.com${pathname.split('/').slice(0, 3).join('/')}`
+        }
+      } catch { continue }
+    }
+
+    // Fallback: look for linkedin.com/in/ directly in HTML
+    const direct = html.match(/https?:\/\/(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9\-_%]{3,80})(?:\/|"|'|&)/)
+    if (direct) return `https://www.linkedin.com/in/${direct[1]}`
+  } catch { /* fall through */ }
+  return null
 }
 
-async function fetchProfileImage(linkedInUrl: string): Promise<string | null> {
-  const browser = await launchBrowser()
+// Use Bright Data LinkedIn scraper to get full profile data given a URL
+async function scrapeLinkedInProfile(linkedInUrl: string): Promise<{ avatar_url: string | null; title: string | null; company: string | null; location: string | null }> {
+  const empty = { avatar_url: null, title: null, company: null, location: null }
+  const apiToken = process.env.BRIGHTDATA_API_TOKEN
+  const datasetId = process.env.BRIGHTDATA_LINKEDIN_DATASET_ID
+  if (!apiToken || !datasetId) return empty
+
   try {
-    const page = await browser.newContext(BROWSER_CONTEXT).then((c) => c.newPage())
-    // Short timeout — we only need the initial HTML, not full page render
-    await page.goto(linkedInUrl, { waitUntil: 'domcontentloaded', timeout: 12000 })
-
-    const imageUrl = await page.evaluate(() => {
-      const og = document.querySelector('meta[property="og:image"]')
-      return og?.getAttribute('content') ?? null
-    })
-
-    // LinkedIn's placeholder ghost images aren't useful
-    if (imageUrl && !imageUrl.includes('ghost') && !imageUrl.includes('static')) {
-      console.log('[linkedin] Profile image found for', linkedInUrl)
-      return imageUrl
+    const res = await fetch(
+      `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${datasetId}&notify=false&include_errors=true`,
+      {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: [{ url: linkedInUrl }] }),
+        signal: AbortSignal.timeout(30000),
+      }
+    )
+    if (!res.ok) {
+      console.error('[linkedin] Bright Data error:', res.status, await res.text())
+      return empty
     }
-    return null
-  } catch {
-    return null
-  } finally {
-    await browser.close().catch(() => {})
+
+    const data = await res.json()
+    const p = Array.isArray(data) ? data[0] : data
+    if (!p || p.error) return empty
+
+    console.log('[linkedin] Bright Data profile keys:', Object.keys(p))
+
+    return {
+      avatar_url: p.profile_image_url ?? p.img_url ?? p.avatar ?? p.photo ?? null,
+      title: p.headline ?? p.job_title ?? p.title ?? p.current_title ?? null,
+      company: p.current_company_name ?? p.company ?? p.organization ?? null,
+      location: p.location ?? p.city ?? null,
+    }
+  } catch (e) {
+    console.error('[linkedin] Bright Data fetch error:', e instanceof Error ? e.message : e)
+    return empty
   }
 }
 
 async function findLinkedIn(attendee: Input): Promise<Result> {
-  const extras = [attendee.company, attendee.location].filter(Boolean) as string[]
+  // 1. Find LinkedIn URL via DuckDuckGo search
+  let linkedin_url = await searchLinkedInUrl(attendee.name, attendee.company)
+  if (!linkedin_url) linkedin_url = await searchLinkedInUrl(attendee.name, null)
 
-  let linkedin_url = extras.length ? await searchForLinkedIn(attendee.name, extras) : null
-  if (!linkedin_url) linkedin_url = await searchForLinkedIn(attendee.name, [])
+  console.log('[linkedin]', linkedin_url ? `Found URL: ${linkedin_url}` : `No URL for: ${attendee.name}`)
 
-  console.log('[linkedin]', linkedin_url ? `Found: ${linkedin_url}` : `No result for: ${attendee.name}`)
+  if (!linkedin_url) return { id: attendee.id, linkedin_url: null, avatar_url: null }
 
-  let avatar_url: string | null = null
-  if (linkedin_url) {
-    avatar_url = await fetchProfileImage(linkedin_url)
-  }
+  // 2. Enrich with Bright Data to get photo + current profile data
+  const profile = await scrapeLinkedInProfile(linkedin_url)
 
-  return { id: attendee.id, linkedin_url, avatar_url }
+  return { id: attendee.id, linkedin_url, avatar_url: profile.avatar_url }
 }
 
 export async function POST(request: Request) {
