@@ -10,6 +10,7 @@ export type Attendee = {
   avatar_url?: string | null
   linkedin_url?: string | null
   company_url?: string | null
+  conference_id?: string | null
 }
 
 const TAG_CONFIG: Record<string, { label: string; card: string; badge: string; header: string }> = {

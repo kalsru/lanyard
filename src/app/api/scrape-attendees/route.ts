@@ -187,10 +187,20 @@ export async function POST(request: Request) {
       }
     }, url)
 
+    // Extract conference name from page title / h1 / h2
+    const conferenceName: string | null = await page.evaluate((pageUrl: string) => {
+      const h1 = document.querySelector('h1')?.textContent?.trim()
+      const h2 = document.querySelector('h2')?.textContent?.trim()
+      const title = document.title?.trim()
+      const domain = new URL(pageUrl).hostname.replace(/^www\./, '').split('.')[0]
+      const candidate = h1 || h2 || title || domain
+      return candidate?.replace(/\s*[-|–]\s*(speakers?|attendees?|members?|people|home|welcome)\s*$/i, '').trim() ?? null
+    }, url)
+
     // If DOM extraction got attendees with company data, return them
     const domHasCompany = domAttendees.some((a) => a.company)
     if (domAttendees.length > 0 && domHasCompany) {
-      return NextResponse.json({ attendees: domAttendees })
+      return NextResponse.json({ attendees: domAttendees, conference_name: conferenceName })
     }
 
     // --- Vision fallback: screenshot + Claude ---
@@ -212,8 +222,7 @@ export async function POST(request: Request) {
     const visionAttendees = await extractViaVision(screenshots)
 
     if (visionAttendees.length === 0) {
-      // Return DOM results even without company rather than nothing
-      if (domAttendees.length > 0) return NextResponse.json({ attendees: domAttendees })
+      if (domAttendees.length > 0) return NextResponse.json({ attendees: domAttendees, conference_name: conferenceName })
       return NextResponse.json({
         error: 'No attendees found. The page may require login or use an unsupported format.',
         attendees: [],
@@ -227,7 +236,7 @@ export async function POST(request: Request) {
       return { ...a, avatar_url: dom?.avatar_url ?? null }
     })
 
-    return NextResponse.json({ attendees: enriched })
+    return NextResponse.json({ attendees: enriched, conference_name: conferenceName })
 
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
