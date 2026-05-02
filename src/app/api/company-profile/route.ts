@@ -50,37 +50,50 @@ function isSkipped(href: string): boolean {
 }
 
 async function findWebsiteForCompany(name: string): Promise<string | null> {
-  // 1. DuckDuckGo Instant Answer API — free JSON API, no browser, no bot detection
+  // 1. Wikidata — free, no key, returns P856 (official website) for any company with a Wikipedia article
   try {
-    const ddgRes = await fetch(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(name)}&format=json&no_redirect=1&no_html=1&skip_disambig=1`,
-      { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0' } }
+    const searchRes = await fetch(
+      `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(name)}&language=en&type=item&format=json&limit=3&origin=*`,
+      { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0 (contact@lanyard.app)' } }
     )
-    if (ddgRes.ok) {
-      const ddg = await ddgRes.json()
-      const official = ddg.AbstractURL || ddg.OfficialSite || ddg.Redirect
-      if (official && !isSkipped(official)) {
-        const { protocol, hostname } = new URL(official)
-        if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
+    if (searchRes.ok) {
+      const searchData = await searchRes.json()
+      for (const entity of searchData.search ?? []) {
+        const entityRes = await fetch(
+          `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${entity.id}&props=claims&format=json&origin=*`,
+          { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0 (contact@lanyard.app)' } }
+        )
+        if (!entityRes.ok) continue
+        const entityData = await entityRes.json()
+        const claims = entityData.entities?.[entity.id]?.claims
+        const p856 = claims?.P856?.[0]?.mainsnak?.datavalue?.value
+        if (p856 && !isSkipped(p856)) {
+          try {
+            const { protocol, hostname } = new URL(p856)
+            if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
+          } catch { continue }
+        }
       }
     }
   } catch { /* fall through */ }
 
-  // 2. Bing Web Search API if key is configured
-  const bingKey = process.env.BING_SEARCH_API_KEY
-  if (bingKey) {
+  // 2. Brave Search API if key is configured (free tier: 2000/month at api.search.brave.com)
+  const braveKey = process.env.BRAVE_SEARCH_API_KEY
+  if (braveKey) {
     try {
-      const bingRes = await fetch(
-        `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(`${name} official website`)}&count=5&mkt=en-US`,
-        { signal: AbortSignal.timeout(8000), headers: { 'Ocp-Apim-Subscription-Key': bingKey } }
+      const braveRes = await fetch(
+        `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(`${name} official website`)}&count=5`,
+        { signal: AbortSignal.timeout(8000), headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey } }
       )
-      if (bingRes.ok) {
-        const bing = await bingRes.json()
-        for (const result of bing.webPages?.value ?? []) {
+      if (braveRes.ok) {
+        const brave = await braveRes.json()
+        for (const result of brave.web?.results ?? []) {
           const href: string = result.url
           if (href && !isSkipped(href)) {
-            const { protocol, hostname } = new URL(href)
-            if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
+            try {
+              const { protocol, hostname } = new URL(href)
+              if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
+            } catch { continue }
           }
         }
       }
