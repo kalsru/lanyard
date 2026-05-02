@@ -42,13 +42,15 @@ export default function AttendeesPage() {
     const supabase = createClient()
 
     const [attendeesRes, conferencesRes] = await Promise.all([
-      supabase.from('attendees').select('*').order('created_at', { ascending: false }).limit(5000),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (supabase as any).from('attendees').select('*').order('created_at', { ascending: false }).limit(5000),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (supabase as any).from('conferences').select('id, name, url').order('created_at', { ascending: false }),
     ])
 
     if (attendeesRes.data) {
-      setSavedAttendees(attendeesRes.data.map((r) => ({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setSavedAttendees(attendeesRes.data.map((r: any) => ({
         id: r.id,
         name: r.name,
         title: r.title,
@@ -101,7 +103,8 @@ export default function AttendeesPage() {
       source,
     }))
 
-    const { data: inserted, error: insertError } = await supabase.from('attendees').insert(rows).select('id, name, title, company, location')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: inserted, error: insertError } = await (supabase as any).from('attendees').insert(rows).select('id, name, title, company, location')
     if (insertError) {
       setExtractState({ status: 'error', message: `Save failed: ${insertError.message}` })
       return
@@ -124,10 +127,12 @@ export default function AttendeesPage() {
     ])
 
     for (const { id, linkedin_url, avatar_url } of linkedinRes.results.filter((r) => r.linkedin_url)) {
-      await supabase.from('attendees').update({ linkedin_url, ...(avatar_url && { avatar_url }) }).eq('id', id)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (supabase as any).from('attendees').update({ linkedin_url, ...(avatar_url && { avatar_url }) }).eq('id', id)
     }
     for (const { id, company_url } of companyRes.results.filter((r) => r.company_url)) {
-      await supabase.from('attendees').update({ company_url }).eq('id', id)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (supabase as any).from('attendees').update({ company_url }).eq('id', id)
     }
 
     await loadSaved()
@@ -205,7 +210,8 @@ export default function AttendeesPage() {
 
   async function handleClearAll() {
     const supabase = createClient()
-    await supabase.from('attendees').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabase as any).from('attendees').delete().neq('id', '00000000-0000-0000-0000-000000000000')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (supabase as any).from('conferences').delete().neq('id', '00000000-0000-0000-0000-000000000000')
     setSavedAttendees([])
