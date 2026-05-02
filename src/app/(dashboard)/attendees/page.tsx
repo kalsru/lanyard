@@ -43,7 +43,8 @@ export default function AttendeesPage() {
 
     const [attendeesRes, conferencesRes] = await Promise.all([
       supabase.from('attendees').select('*').order('created_at', { ascending: false }).limit(5000),
-      supabase.from('conferences').select('id, name, url').order('created_at', { ascending: false }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (supabase as any).from('conferences').select('id, name, url').order('created_at', { ascending: false }),
     ])
 
     if (attendeesRes.data) {
@@ -79,7 +80,8 @@ export default function AttendeesPage() {
     if (existing) {
       conferenceId = existing.id
     } else {
-      const { data: newConf } = await supabase
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: newConf } = await (supabase as any)
         .from('conferences')
         .insert({ user_id: user.id, name: trimmedName, url: source.startsWith('http') ? source : null })
         .select('id')
@@ -204,7 +206,8 @@ export default function AttendeesPage() {
   async function handleClearAll() {
     const supabase = createClient()
     await supabase.from('attendees').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-    await supabase.from('conferences').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabase as any).from('conferences').delete().neq('id', '00000000-0000-0000-0000-000000000000')
     setSavedAttendees([])
     setConferences([])
     setSelectedFiles([])
