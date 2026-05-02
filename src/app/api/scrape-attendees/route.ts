@@ -89,8 +89,11 @@ export async function POST(request: Request) {
     })
 
     const page = await context.newPage()
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 })
-    await page.waitForTimeout(2000)
+    // Try domcontentloaded first (fast), fall back to just load if that also fails
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() =>
+      page.goto(url, { waitUntil: 'load', timeout: 15000 }).catch(() => { /* best effort */ })
+    )
+    await page.waitForTimeout(3000)
 
     const finalUrl = page.url()
     if (/login|sign_in|signin/i.test(finalUrl)) {
