@@ -98,8 +98,10 @@ async function scrapeCompany(websiteUrl: string, domain: string): Promise<Compan
       viewport: { width: 1280, height: 900 },
     })
     const page = await context.newPage()
-    await page.goto(websiteUrl, { waitUntil: 'domcontentloaded', timeout: 20000 })
-    await page.waitForTimeout(1500)
+    await page.goto(websiteUrl, { waitUntil: 'networkidle', timeout: 25000 }).catch(() =>
+      page.goto(websiteUrl, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    )
+    await page.waitForTimeout(1000)
 
     // Extract logo
     const logo_url = await page.evaluate((base: string) => {
@@ -253,16 +255,20 @@ export async function GET(request: Request) {
     }
 
     const profile = await scrapeCompany(websiteUrl, domain)
-    await supabase.from('company_profiles').upsert({ ...profile, fetched_at: new Date().toISOString() })
+
+    // Store in cache — log failures but never block the response
+    supabase.from('company_profiles').upsert({ ...profile, fetched_at: new Date().toISOString() })
+      .then(({ error }) => { if (error) console.error('[company-profile] Cache write failed:', error.message) })
+
     return NextResponse.json(profile)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     console.error('[company-profile] Error:', message)
-    return NextResponse.json(
-      { domain, name, description: null, industry: null, sic_code: null, sic_description: null,
-        revenue: null, employee_count: null, founded_year: null, hq: null, logo_url: null,
-        website_url: websiteUrl, error: message },
-      { status: 500 },
-    )
+    // Return whatever we know rather than empty — caller can still show name + website
+    return NextResponse.json({
+      domain, name: name ?? domain, description: null, industry: null,
+      sic_code: null, sic_description: null, revenue: null, employee_count: null,
+      founded_year: null, hq: null, logo_url: null, website_url: websiteUrl,
+    })
   }
 }

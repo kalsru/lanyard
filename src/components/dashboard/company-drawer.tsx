@@ -155,11 +155,9 @@ export function CompanyDrawer({ companyName, companyUrl, onClose }: Props) {
           )}
 
           {error && !loading && (
-            <div className="text-center py-6">
-              <p className="text-sm text-slate-400">{error}</p>
-              <button onClick={() => fetchProfile(true)} className="mt-3 text-xs text-violet-600 hover:underline font-semibold">
-                Try again
-              </button>
+            <div className="text-center py-4">
+              <p className="text-xs text-slate-400">{error}</p>
+              <button onClick={() => fetchProfile(true)} className="mt-2 text-xs text-violet-600 hover:underline font-semibold">Try again</button>
             </div>
           )}
 
