@@ -43,17 +43,16 @@ export function CompanyDrawer({ companyName, companyUrl, onClose }: Props) {
     setLoading(true)
     setProfile(null)
 
-    if (!companyUrl) {
-      setLoading(false)
-      return
-    }
+    const params = new URLSearchParams()
+    if (companyUrl) params.set('url', companyUrl)
+    else params.set('name', companyName)
 
-    fetch(`/api/company-profile?url=${encodeURIComponent(companyUrl)}`)
+    fetch(`/api/company-profile?${params}`)
       .then((r) => r.json())
       .then((data) => setProfile(data))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [companyUrl])
+  }, [companyUrl, companyName])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -127,11 +126,6 @@ export function CompanyDrawer({ companyName, companyUrl, onClose }: Props) {
                 <div className="h-4 bg-slate-100 rounded w-1/4" />
               </div>
             </div>
-          )}
-
-          {/* No URL state */}
-          {!loading && !companyUrl && (
-            <p className="text-sm text-slate-400 text-center py-4">No website URL found for this company.</p>
           )}
 
           {/* Profile data */}

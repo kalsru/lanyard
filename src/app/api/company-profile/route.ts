@@ -8,6 +8,52 @@ export const maxDuration = 120
 const EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+const SKIP_DOMAINS = new Set([
+  'google.com', 'bing.com', 'yahoo.com', 'linkedin.com', 'facebook.com',
+  'twitter.com', 'x.com', 'instagram.com', 'youtube.com', 'wikipedia.org',
+  'bloomberg.com', 'crunchbase.com', 'glassdoor.com', 'indeed.com',
+  'yelp.com', 'zoominfo.com', 'dnb.com', 'pitchbook.com',
+])
+
+function isSkipped(href: string): boolean {
+  try {
+    const bare = new URL(href).hostname.replace(/^www\./, '')
+    return SKIP_DOMAINS.has(bare) || [...SKIP_DOMAINS].some((d) => bare.endsWith('.' + d))
+  } catch { return true }
+}
+
+async function findWebsiteForCompany(name: string): Promise<string | null> {
+  const browser = await chromium.launch({
+    headless: true,
+    ...(EXECUTABLE_PATH && { executablePath: EXECUTABLE_PATH }),
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  })
+  try {
+    const page = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 900 },
+    }).then((c) => c.newPage())
+    const q = encodeURIComponent(`"${name}" official website`)
+    await page.goto(`https://www.google.com/search?q=${q}&num=5`, { waitUntil: 'domcontentloaded', timeout: 20000 })
+    await page.waitForTimeout(1500)
+    const candidates = await page.evaluate(() =>
+      (Array.from(document.querySelectorAll('a[href]')) as HTMLAnchorElement[])
+        .map((a) => a.href).filter((h) => h.startsWith('http') && !h.includes('google.com'))
+    )
+    for (const href of candidates) {
+      if (!isSkipped(href)) {
+        try {
+          const { protocol, hostname } = new URL(href)
+          if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
+        } catch { continue }
+      }
+    }
+    return null
+  } finally {
+    await browser.close().catch(() => {})
+  }
+}
+
 type CompanyProfile = {
   domain: string
   name: string | null
@@ -110,17 +156,33 @@ Return JSON: {"name":"...","description":"...","industry":"...","hq":"...","size
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
-  const url = searchParams.get('url')?.trim()
+  const urlParam = searchParams.get('url')?.trim() || null
+  const name = searchParams.get('name')?.trim() || null
 
-  if (!url) return NextResponse.json({ error: 'url is required' }, { status: 400 })
+  if (!urlParam && !name) return NextResponse.json({ error: 'url or name is required' }, { status: 400 })
 
-  let parsedUrl: URL
-  try { parsedUrl = new URL(url) } catch {
-    return NextResponse.json({ error: 'Invalid URL' }, { status: 400 })
+  // Resolve website URL — either from param or by Googling the company name
+  let websiteUrl: string
+  if (urlParam) {
+    try {
+      const p = new URL(urlParam)
+      websiteUrl = `${p.protocol}//${p.hostname}`
+    } catch {
+      return NextResponse.json({ error: 'Invalid URL' }, { status: 400 })
+    }
+  } else {
+    const found = await findWebsiteForCompany(name!)
+    if (!found) {
+      return NextResponse.json({
+        domain: name!, name, description: null, industry: null,
+        hq: null, size: null, logo_url: null, website_url: null,
+        error: 'Could not find website for this company.',
+      })
+    }
+    websiteUrl = found
   }
 
-  const domain = extractDomain(url)
-  const websiteUrl = `${parsedUrl.protocol}//${parsedUrl.hostname}`
+  const domain = extractDomain(websiteUrl)
 
   const supabase = getSupabase()
 
