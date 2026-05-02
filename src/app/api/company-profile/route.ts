@@ -31,6 +31,14 @@ export type CompanyProfile = {
   fetched_at?: string
 }
 
+type WikidataResult = {
+  website: string | null
+  revenue: string | null
+  employee_count: string | null
+  founded_year: string | null
+  hq: string | null
+}
+
 function getSupabase() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -49,35 +57,99 @@ function isSkipped(href: string): boolean {
   } catch { return true }
 }
 
-async function findWebsiteForCompany(name: string): Promise<string | null> {
-  // 1. Wikidata — free, no key, returns P856 (official website) for any company with a Wikipedia article
+function formatMoney(amount: string, unit: string): string | null {
+  const num = Math.abs(parseFloat(amount))
+  if (isNaN(num) || num === 0) return null
+  const symbol = unit.includes('Q4916') ? '€' : unit.includes('Q25224') ? '£' : '$'
+  if (num >= 1e9) return `${symbol}${(num / 1e9).toFixed(1)}B`
+  if (num >= 1e6) return `${symbol}${(num / 1e6).toFixed(0)}M`
+  return `${symbol}${num.toLocaleString()}`
+}
+
+function formatEmployees(amount: string): string | null {
+  const num = Math.round(parseFloat(amount))
+  if (isNaN(num) || num === 0) return null
+  if (num >= 1000) return `${(num / 1000).toFixed(0)}K+`
+  return String(num)
+}
+
+// Looks up a company in Wikidata and returns structured data from the knowledge graph
+async function lookupWikidata(name: string): Promise<WikidataResult> {
+  const empty: WikidataResult = { website: null, revenue: null, employee_count: null, founded_year: null, hq: null }
   try {
     const searchRes = await fetch(
       `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(name)}&language=en&type=item&format=json&limit=3&origin=*`,
-      { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0 (contact@lanyard.app)' } }
+      { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0' } }
     )
-    if (searchRes.ok) {
-      const searchData = await searchRes.json()
-      for (const entity of searchData.search ?? []) {
-        const entityRes = await fetch(
-          `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${entity.id}&props=claims&format=json&origin=*`,
-          { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0 (contact@lanyard.app)' } }
-        )
-        if (!entityRes.ok) continue
-        const entityData = await entityRes.json()
-        const claims = entityData.entities?.[entity.id]?.claims
-        const p856 = claims?.P856?.[0]?.mainsnak?.datavalue?.value
-        if (p856 && !isSkipped(p856)) {
-          try {
-            const { protocol, hostname } = new URL(p856)
-            if (['http:', 'https:'].includes(protocol)) return `${protocol}//${hostname}`
-          } catch { continue }
-        }
+    if (!searchRes.ok) return empty
+    const searchData = await searchRes.json()
+
+    for (const entity of searchData.search ?? []) {
+      const entityRes = await fetch(
+        `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${entity.id}&props=claims|labels&languages=en&format=json&origin=*`,
+        { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Lanyard/1.0' } }
+      )
+      if (!entityRes.ok) continue
+      const entityData = await entityRes.json()
+      const wd = entityData.entities?.[entity.id]
+      if (!wd) continue
+      const claims = wd.claims ?? {}
+
+      // P856 = official website
+      const p856 = claims.P856?.[0]?.mainsnak?.datavalue?.value
+      let website: string | null = null
+      if (p856 && !isSkipped(p856)) {
+        try {
+          const { protocol, hostname } = new URL(p856)
+          if (['http:', 'https:'].includes(protocol)) website = `${protocol}//${hostname}`
+        } catch { /* skip */ }
+      }
+
+      // P2139 = total revenue (monetary amount)
+      let revenue: string | null = null
+      const revClaim = claims.P2139?.[0]?.mainsnak?.datavalue?.value
+      if (revClaim?.amount) revenue = formatMoney(revClaim.amount, revClaim.unit ?? '')
+
+      // P1128 = employees (quantity)
+      let employee_count: string | null = null
+      const empClaim = claims.P1128?.[0]?.mainsnak?.datavalue?.value
+      if (empClaim?.amount) employee_count = formatEmployees(empClaim.amount)
+
+      // P571 = inception date
+      let founded_year: string | null = null
+      const incClaim = claims.P571?.[0]?.mainsnak?.datavalue?.value
+      if (incClaim?.time) {
+        const m = incClaim.time.match(/\+(\d{4})/)
+        if (m) founded_year = m[1]
+      }
+
+      // P159 = headquarters location (item reference → fetch label)
+      let hq: string | null = null
+      const hqId = claims.P159?.[0]?.mainsnak?.datavalue?.value?.id
+      if (hqId) {
+        try {
+          const hqRes = await fetch(
+            `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${hqId}&props=labels&languages=en&format=json&origin=*`,
+            { signal: AbortSignal.timeout(5000), headers: { 'User-Agent': 'Lanyard/1.0' } }
+          )
+          if (hqRes.ok) {
+            const hqData = await hqRes.json()
+            hq = hqData.entities?.[hqId]?.labels?.en?.value ?? null
+          }
+        } catch { /* skip */ }
+      }
+
+      // Only return if this looks like a company (has website or revenue or employees)
+      if (website || revenue || employee_count) {
+        return { website, revenue, employee_count, founded_year, hq }
       }
     }
   } catch { /* fall through */ }
+  return empty
+}
 
-  // 2. Brave Search API if key is configured (free tier: 2000/month at api.search.brave.com)
+async function findWebsiteForCompany(name: string): Promise<string | null> {
+  // Brave Search API if key configured (free tier: 2000/month at api.search.brave.com)
   const braveKey = process.env.BRAVE_SEARCH_API_KEY
   if (braveKey) {
     try {
@@ -100,7 +172,7 @@ async function findWebsiteForCompany(name: string): Promise<string | null> {
     } catch { /* fall through */ }
   }
 
-  // 3. Domain guess — works for simple well-known names (e.g. "Henry Schein" → henryschein.com)
+  // Domain guess — works for simple well-known names (e.g. "Henry Schein" → henryschein.com)
   const guessed = name.toLowerCase().replace(/[^a-z0-9]+/g, '') + '.com'
   try {
     const res = await fetch(`https://${guessed}`, { method: 'HEAD', signal: AbortSignal.timeout(5000) })
@@ -128,7 +200,6 @@ async function scrapeCompany(websiteUrl: string, domain: string): Promise<Compan
     )
     await page.waitForTimeout(1000)
 
-    // Extract logo
     const logo_url = await page.evaluate((base: string) => {
       const og = document.querySelector('meta[property="og:image"]')?.getAttribute('content')
       if (og && !og.includes('placeholder') && !og.includes('default')) return og
@@ -137,26 +208,23 @@ async function scrapeCompany(websiteUrl: string, domain: string): Promise<Compan
       return null
     }, websiteUrl)
 
-    // Extract visible text from homepage (strip nav/footer noise)
     const homepageText = await page.evaluate(() => {
       const remove = ['nav', 'footer', 'header', 'script', 'style', 'noscript']
       remove.forEach((tag) => document.querySelectorAll(tag).forEach((el) => el.remove()))
       return document.body.innerText.slice(0, 4000).replace(/\s+/g, ' ').trim()
     })
 
-    // Also try /about page for richer info
     let aboutText = ''
     try {
       const aboutPage = await context.newPage()
-      const aboutUrl = `${websiteUrl}/about`
-      await aboutPage.goto(aboutUrl, { waitUntil: 'domcontentloaded', timeout: 10000 })
+      await aboutPage.goto(`${websiteUrl}/about`, { waitUntil: 'domcontentloaded', timeout: 10000 })
       aboutText = await aboutPage.evaluate(() => {
         const remove = ['nav', 'footer', 'header', 'script', 'style', 'noscript']
         remove.forEach((tag) => document.querySelectorAll(tag).forEach((el) => el.remove()))
         return document.body.innerText.slice(0, 3000).replace(/\s+/g, ' ').trim()
       })
       await aboutPage.close()
-    } catch { /* /about page not available */ }
+    } catch { /* /about not available */ }
 
     const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 1280, height: 900 } })
     const base64 = screenshot.toString('base64')
@@ -252,7 +320,6 @@ export async function GET(request: Request) {
   const domain = websiteUrl ? extractDomain(websiteUrl) : (name ?? '')
   const supabase = getSupabase()
 
-  // Check cache
   if (!refresh) {
     const { data: cached } = await supabase
       .from('company_profiles')
@@ -267,21 +334,35 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Find URL via Google if not provided
+    // Wikidata lookup — gets website + structured data (revenue, employees, founded, HQ) in parallel with no scraping needed
+    const wikidata = name ? await lookupWikidata(name) : { website: null, revenue: null, employee_count: null, founded_year: null, hq: null }
+
+    if (!websiteUrl) websiteUrl = wikidata.website
+    if (!websiteUrl) websiteUrl = await findWebsiteForCompany(name!)
+
     if (!websiteUrl) {
-      websiteUrl = await findWebsiteForCompany(name!)
-      if (!websiteUrl) {
-        return NextResponse.json({
-          domain, name, description: null, industry: null, sic_code: null,
-          sic_description: null, revenue: null, employee_count: null,
-          founded_year: null, hq: null, logo_url: null, website_url: null,
-        })
-      }
+      return NextResponse.json({
+        domain, name, description: null, industry: null, sic_code: null,
+        sic_description: null,
+        revenue: wikidata.revenue,
+        employee_count: wikidata.employee_count,
+        founded_year: wikidata.founded_year,
+        hq: wikidata.hq,
+        logo_url: null, website_url: null,
+      })
     }
 
-    const profile = await scrapeCompany(websiteUrl, domain)
+    const scraped = await scrapeCompany(websiteUrl, domain)
 
-    // Store in cache — log failures but never block the response
+    // Merge: scraped wins; Wikidata fills gaps for structured fields
+    const profile: CompanyProfile = {
+      ...scraped,
+      revenue: scraped.revenue || wikidata.revenue,
+      employee_count: scraped.employee_count || wikidata.employee_count,
+      founded_year: scraped.founded_year || wikidata.founded_year,
+      hq: scraped.hq || wikidata.hq,
+    }
+
     supabase.from('company_profiles').upsert({ ...profile, fetched_at: new Date().toISOString() })
       .then(({ error }) => { if (error) console.error('[company-profile] Cache write failed:', error.message) })
 
@@ -289,7 +370,6 @@ export async function GET(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     console.error('[company-profile] Error:', message)
-    // Return whatever we know rather than empty — caller can still show name + website
     return NextResponse.json({
       domain, name: name ?? domain, description: null, industry: null,
       sic_code: null, sic_description: null, revenue: null, employee_count: null,
