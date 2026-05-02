@@ -175,26 +175,35 @@ async function scrapeLinkedInCompany(companyName: string) {
   }
 }
 
-// ── Website URL discovery (no browser) ───────────────────────────────────────
+// ── Search helpers (Serper = Google) ─────────────────────────────────────────
+
+async function serperSearch(q: string): Promise<{ title: string; link: string }[]> {
+  const key = process.env.SERPER_API_KEY
+  if (!key) return []
+  try {
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q, num: 5 }),
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.organic ?? []
+  } catch { return [] }
+}
+
+// ── Website URL discovery ─────────────────────────────────────────────────────
 
 async function findWebsiteForCompany(name: string): Promise<string | null> {
-  const braveKey = process.env.BRAVE_SEARCH_API_KEY
-  if (braveKey) {
-    try {
-      const res = await fetch(
-        `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(`${name} official website`)}&count=5`,
-        { signal: AbortSignal.timeout(8000), headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey } }
-      )
-      if (res.ok) {
-        const data = await res.json()
-        for (const result of data.web?.results ?? []) {
-          if (result.url && !isSkipped(result.url)) {
-            try { const { protocol, hostname } = new URL(result.url); return `${protocol}//${hostname}` } catch { continue }
-          }
-        }
-      }
-    } catch { /* fall through */ }
+  // Serper (Google) search
+  const results = await serperSearch(`"${name}" official website`)
+  for (const r of results) {
+    if (r.link && !isSkipped(r.link)) {
+      try { const { protocol, hostname } = new URL(r.link); return `${protocol}//${hostname}` } catch { continue }
+    }
   }
+  // Domain guess fallback
   const guessed = name.toLowerCase().replace(/[^a-z0-9]+/g, '') + '.com'
   try {
     const res = await fetch(`https://${guessed}`, { method: 'HEAD', signal: AbortSignal.timeout(5000) })
@@ -254,10 +263,22 @@ export async function GET(request: Request) {
   }
 
   try {
+    // Find LinkedIn company URL via Serper, then scrape with Bright Data
+    async function getLinkedInCompanyData(companyName: string) {
+      // Try Serper search first
+      const results = await serperSearch(`"${companyName}" site:linkedin.com/company`)
+      for (const r of results) {
+        const m = r.link?.match(/linkedin\.com\/company\/([a-zA-Z0-9\-_%]+)/)
+        if (m) return scrapeLinkedInCompany(`https://www.linkedin.com/company/${m[1]}`)
+      }
+      // Fall back to slug guessing
+      return scrapeLinkedInCompany(companyName)
+    }
+
     // Run all lookups in parallel — no browser needed
     const [wikidata, linkedInData] = await Promise.all([
       name ? lookupWikidata(name) : Promise.resolve({ website: null, revenue: null, employee_count: null, founded_year: null, hq: null }),
-      name ? scrapeLinkedInCompany(name) : Promise.resolve({ name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }),
+      name ? getLinkedInCompanyData(name) : Promise.resolve({ name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }),
     ])
 
     if (!websiteUrl) websiteUrl = linkedInData.website_url || wikidata.website

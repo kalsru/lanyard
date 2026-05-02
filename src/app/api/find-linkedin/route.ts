@@ -5,32 +5,35 @@ export const maxDuration = 120
 type Input = { id: string; name: string; title: string | null; company: string | null; location: string | null }
 type Result = { id: string; linkedin_url: string | null; avatar_url: string | null }
 
-// Generate plausible LinkedIn person slug variants from a full name
-function personSlugs(name: string): string[] {
-  const parts = name.toLowerCase().trim().split(/\s+/).filter(Boolean)
-  if (parts.length < 2) return [parts[0] ?? '']
-  const [first, ...rest] = parts
-  const last = rest[rest.length - 1]
-  const middle = rest.length > 1 ? rest[0] : null
-  const slugs: string[] = [
-    `${first}-${last}`,
-    `${first}${last}`,
-    middle ? `${first}-${middle[0]}-${last}` : null,
-    `${first}-${rest.join('-')}`,
-  ].filter((s): s is string => !!s && s.length > 2)
-  return [...new Set(slugs)]
+// Search Google via Serper.dev for a LinkedIn profile URL
+async function searchLinkedInUrl(name: string, company: string | null): Promise<string | null> {
+  const serperKey = process.env.SERPER_API_KEY
+  if (!serperKey) return null
+
+  const q = company ? `"${name}" "${company}" site:linkedin.com/in` : `"${name}" site:linkedin.com/in`
+  try {
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q, num: 5 }),
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    for (const result of data.organic ?? []) {
+      const link: string = result.link ?? ''
+      const m = link.match(/linkedin\.com\/in\/([a-zA-Z0-9\-_%]+)/)
+      if (m) return `https://www.linkedin.com/in/${m[1]}`
+    }
+  } catch { /* fall through */ }
+  return null
 }
 
-// Use Bright Data to scrape LinkedIn people profiles — tries slug variants, picks name match
-async function scrapeLinkedInProfile(attendeeName: string, knownUrl?: string | null): Promise<{ linkedin_url: string | null; avatar_url: string | null }> {
-  const empty = { linkedin_url: null, avatar_url: null }
+// Use Bright Data to scrape a LinkedIn profile URL and return photo
+async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string): Promise<string | null> {
   const apiToken = process.env.BRIGHTDATA_API_TOKEN
   const datasetId = process.env.BRIGHTDATA_LINKEDIN_DATASET_ID
-  if (!apiToken || !datasetId) return empty
-
-  const urls = knownUrl
-    ? [{ url: knownUrl }]
-    : personSlugs(attendeeName).map((s) => ({ url: `https://www.linkedin.com/in/${s}` }))
+  if (!apiToken || !datasetId) return null
 
   try {
     const res = await fetch(
@@ -38,44 +41,41 @@ async function scrapeLinkedInProfile(attendeeName: string, knownUrl?: string | n
       {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: urls }),
+        body: JSON.stringify({ input: [{ url: linkedInUrl }] }),
         signal: AbortSignal.timeout(45000),
       }
     )
-    if (!res.ok) { console.error('[linkedin] BD error:', res.status); return empty }
-
+    if (!res.ok) return null
     const data = await res.json()
     const results: unknown[] = Array.isArray(data) ? data : [data]
 
-    // Find result whose name roughly matches the attendee (avoids wrong person on slug collision)
+    // Verify name matches to avoid wrong person
     const nameLower = attendeeName.toLowerCase()
+    const [first, ...rest] = nameLower.split(' ')
+    const last = rest[rest.length - 1] ?? ''
     const p = results.find((r: unknown) => {
       if (!r || typeof r !== 'object') return false
       const row = r as Record<string, unknown>
       if (row.error) return false
       const rName = String(row.name ?? '').toLowerCase()
-      if (!rName) return false
-      const [first, ...rest] = nameLower.split(' ')
-      const last = rest[rest.length - 1] ?? ''
       return rName.includes(first) && (!last || rName.includes(last))
     }) as Record<string, unknown> | undefined
 
-    if (!p) return empty
-
-    const linkedin_url = knownUrl ?? `https://www.linkedin.com/in/${personSlugs(attendeeName)[0]}`
-    return {
-      linkedin_url,
-      avatar_url: (p.avatar ?? p.profile_image_url ?? p.img_url ?? null) as string | null,
-    }
-  } catch (e) {
-    console.error('[linkedin] BD fetch error:', e instanceof Error ? e.message : e)
-    return empty
-  }
+    return (p?.avatar ?? p?.profile_image_url ?? p?.img_url ?? null) as string | null
+  } catch { return null }
 }
 
 async function findLinkedIn(attendee: Input): Promise<Result> {
-  const { linkedin_url, avatar_url } = await scrapeLinkedInProfile(attendee.name)
-  console.log('[linkedin]', linkedin_url ? `Found: ${linkedin_url}` : `No match for: ${attendee.name}`)
+  // 1. Find LinkedIn URL via Serper (Google search)
+  let linkedin_url = await searchLinkedInUrl(attendee.name, attendee.company)
+  if (!linkedin_url) linkedin_url = await searchLinkedInUrl(attendee.name, null)
+
+  console.log('[linkedin]', linkedin_url ? `Found: ${linkedin_url}` : `No URL for: ${attendee.name}`)
+  if (!linkedin_url) return { id: attendee.id, linkedin_url: null, avatar_url: null }
+
+  // 2. Scrape profile via Bright Data for photo
+  const avatar_url = await scrapeLinkedInProfile(linkedin_url, attendee.name)
+
   return { id: attendee.id, linkedin_url, avatar_url }
 }
 
