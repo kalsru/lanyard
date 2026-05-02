@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Navbar } from '@/components/dashboard/navbar'
 import { AttendeeCard, type Attendee } from '@/components/dashboard/attendee-card'
+import { CompanyDrawer } from '@/components/dashboard/company-drawer'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { createClient } from '@/lib/supabase/client'
@@ -23,6 +24,7 @@ export default function AttendeesPage() {
   const [previews, setPreviews] = useState<string[]>([])
   const [url, setUrl] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [drawerCompany, setDrawerCompany] = useState<{ name: string; url: string | null } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const loadSaved = useCallback(async (autoEnrich = false) => {
@@ -424,7 +426,11 @@ export default function AttendeesPage() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {filteredAttendees.map((attendee) => (
-                <AttendeeCard key={attendee.id} attendee={attendee} />
+                <AttendeeCard
+                  key={attendee.id}
+                  attendee={attendee}
+                  onCompanyClick={(name, url) => setDrawerCompany({ name, url })}
+                />
               ))}
             </div>
           </>
@@ -438,6 +444,13 @@ export default function AttendeesPage() {
           )
         )}
       </main>
+      {drawerCompany && (
+        <CompanyDrawer
+          companyName={drawerCompany.name}
+          companyUrl={drawerCompany.url}
+          onClose={() => setDrawerCompany(null)}
+        />
+      )}
     </div>
   )
 }

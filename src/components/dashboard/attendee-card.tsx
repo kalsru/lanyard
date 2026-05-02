@@ -45,7 +45,7 @@ function LinkedInIcon() {
   )
 }
 
-export function AttendeeCard({ attendee }: { attendee: Attendee }) {
+export function AttendeeCard({ attendee, onCompanyClick }: { attendee: Attendee; onCompanyClick?: (name: string, url: string | null) => void }) {
   const initials = attendee.name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
 
   const topTag = attendee.tags?.find((t) => TAG_CONFIG[t])
@@ -103,14 +103,12 @@ export function AttendeeCard({ attendee }: { attendee: Attendee }) {
         )}
 
         {displayCompany && (
-          <a
-            href={attendee.company_url ?? `https://www.google.com/search?q=${encodeURIComponent(displayCompany)}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs font-semibold text-primary hover:underline mb-1 truncate max-w-full"
+          <button
+            onClick={() => onCompanyClick?.(displayCompany, attendee.company_url ?? null)}
+            className="text-xs font-semibold text-primary hover:underline mb-1 truncate max-w-full cursor-pointer"
           >
             {displayCompany}
-          </a>
+          </button>
         )}
 
         {attendee.location && (
