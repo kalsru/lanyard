@@ -6,11 +6,12 @@ type Input = { id: string; name: string; title: string | null; company: string |
 type Result = { id: string; linkedin_url: string | null; avatar_url: string | null }
 
 // Search Google via Serper.dev for a LinkedIn profile URL
-async function searchLinkedInUrl(name: string, company: string | null): Promise<string | null> {
+async function searchLinkedInUrl(name: string, company: string | null, title: string | null): Promise<string | null> {
   const serperKey = process.env.SERPER_API_KEY
   if (!serperKey) return null
 
-  const q = company ? `"${name}" "${company}" site:linkedin.com/in` : `"${name}" site:linkedin.com/in`
+  const parts = [`"${name}"`, company && `"${company}"`, title && `"${title}"`, 'site:linkedin.com/in'].filter(Boolean)
+  const q = parts.join(' ')
   try {
     const res = await fetch('https://google.serper.dev/search', {
       method: 'POST',
@@ -29,11 +30,11 @@ async function searchLinkedInUrl(name: string, company: string | null): Promise<
   return null
 }
 
-// Use Bright Data to scrape a LinkedIn profile URL and return photo
-async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string): Promise<string | null> {
+// Use Bright Data to scrape a LinkedIn profile URL — returns avatar and whether name verified
+async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string): Promise<{ avatar_url: string | null; verified: boolean }> {
   const apiToken = process.env.BRIGHTDATA_API_TOKEN
   const datasetId = process.env.BRIGHTDATA_LINKEDIN_DATASET_ID
-  if (!apiToken || !datasetId) return null
+  if (!apiToken || !datasetId) return { avatar_url: null, verified: false }
 
   try {
     const res = await fetch(
@@ -45,11 +46,10 @@ async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string):
         signal: AbortSignal.timeout(45000),
       }
     )
-    if (!res.ok) return null
+    if (!res.ok) return { avatar_url: null, verified: false }
     const data = await res.json()
     const results: unknown[] = Array.isArray(data) ? data : [data]
 
-    // Verify name matches to avoid wrong person
     const nameLower = attendeeName.toLowerCase()
     const [first, ...rest] = nameLower.split(' ')
     const last = rest[rest.length - 1] ?? ''
@@ -61,20 +61,30 @@ async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string):
       return rName.includes(first) && (!last || rName.includes(last))
     }) as Record<string, unknown> | undefined
 
-    return (p?.avatar ?? p?.profile_image_url ?? p?.img_url ?? null) as string | null
-  } catch { return null }
+    if (!p) return { avatar_url: null, verified: false }
+    return {
+      avatar_url: (p.avatar ?? p.profile_image_url ?? p.img_url ?? null) as string | null,
+      verified: true,
+    }
+  } catch { return { avatar_url: null, verified: false } }
 }
 
 async function findLinkedIn(attendee: Input): Promise<Result> {
-  // 1. Find LinkedIn URL via Serper (Google search)
-  let linkedin_url = await searchLinkedInUrl(attendee.name, attendee.company)
-  if (!linkedin_url) linkedin_url = await searchLinkedInUrl(attendee.name, null)
+  // 1. Find LinkedIn URL — try with company+title, then company only, then name only
+  let linkedin_url = await searchLinkedInUrl(attendee.name, attendee.company, attendee.title)
+  if (!linkedin_url) linkedin_url = await searchLinkedInUrl(attendee.name, attendee.company, null)
+  if (!linkedin_url) linkedin_url = await searchLinkedInUrl(attendee.name, null, null)
 
   console.log('[linkedin]', linkedin_url ? `Found: ${linkedin_url}` : `No URL for: ${attendee.name}`)
   if (!linkedin_url) return { id: attendee.id, linkedin_url: null, avatar_url: null }
 
-  // 2. Scrape profile via Bright Data for photo
-  const avatar_url = await scrapeLinkedInProfile(linkedin_url, attendee.name)
+  // 2. Scrape profile via Bright Data — verify name matches before trusting the URL
+  const { avatar_url, verified } = await scrapeLinkedInProfile(linkedin_url, attendee.name)
+
+  if (!verified) {
+    console.log('[linkedin] Name mismatch, discarding URL for:', attendee.name)
+    return { id: attendee.id, linkedin_url: null, avatar_url: null }
+  }
 
   return { id: attendee.id, linkedin_url, avatar_url }
 }
