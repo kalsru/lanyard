@@ -50,6 +50,14 @@ function isSkipped(href: string): boolean {
 }
 
 async function findWebsiteForCompany(name: string): Promise<string | null> {
+  // First try guessing the domain directly (works for most well-known companies)
+  const guessed = name.toLowerCase().replace(/[^a-z0-9]+/g, '') + '.com'
+  try {
+    const res = await fetch(`https://${guessed}`, { method: 'HEAD', signal: AbortSignal.timeout(5000) })
+    if (res.ok || res.status < 400) return `https://${guessed}`
+  } catch { /* not reachable, fall through */ }
+
+  // Fall back to DuckDuckGo HTML search (lighter bot detection than Google)
   const browser = await chromium.launch({
     headless: true,
     ...(EXECUTABLE_PATH && { executablePath: EXECUTABLE_PATH }),
@@ -62,14 +70,21 @@ async function findWebsiteForCompany(name: string): Promise<string | null> {
     }).then((c) => c.newPage())
 
     await page.goto(
-      `https://www.google.com/search?q=${encodeURIComponent(`"${name}" official website`)}&num=5`,
+      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`${name} official website`)}`,
       { waitUntil: 'domcontentloaded', timeout: 20000 },
     )
-    await page.waitForTimeout(1500)
+    await page.waitForTimeout(1000)
 
     const candidates = await page.evaluate(() =>
-      (Array.from(document.querySelectorAll('a[href]')) as HTMLAnchorElement[])
-        .map((a) => a.href).filter((h) => h.startsWith('http') && !h.includes('google.com'))
+      (Array.from(document.querySelectorAll('a.result__url, a[href*="uddg="]')) as HTMLAnchorElement[])
+        .map((a) => {
+          // DuckDuckGo wraps URLs in redirect links — extract real URL
+          const href = a.getAttribute('href') ?? ''
+          const match = href.match(/uddg=([^&]+)/)
+          if (match) { try { return decodeURIComponent(match[1]) } catch { return null } }
+          return a.textContent?.trim() ? `https://${a.textContent.trim()}` : null
+        })
+        .filter((h): h is string => !!h && h.startsWith('http'))
     )
     for (const href of candidates) {
       if (!isSkipped(href)) {
