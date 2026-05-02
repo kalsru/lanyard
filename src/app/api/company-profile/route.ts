@@ -39,6 +39,15 @@ type WikidataResult = {
   hq: string | null
 }
 
+type LinkedInCompanyResult = {
+  name: string | null
+  description: string | null
+  employee_count: string | null
+  hq: string | null
+  logo_url: string | null
+  website_url: string | null
+}
+
 function getSupabase() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -146,6 +155,78 @@ async function lookupWikidata(name: string): Promise<WikidataResult> {
     }
   } catch { /* fall through */ }
   return empty
+}
+
+// Search DuckDuckGo for a LinkedIn company page URL
+async function findLinkedInCompanyUrl(name: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`${name} site:linkedin.com/company`)}`,
+      { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html' } }
+    )
+    if (!res.ok) return null
+    const html = await res.text()
+    const matches = [...html.matchAll(/uddg=(https?%3A%2F%2F(?:www\.)?linkedin\.com%2Fcompany%2F([a-zA-Z0-9\-_%]+))/g)]
+    for (const m of matches) {
+      try {
+        const url = decodeURIComponent(m[1])
+        const { hostname, pathname } = new URL(url)
+        if (hostname.includes('linkedin.com') && pathname.startsWith('/company/')) {
+          return `https://www.linkedin.com${pathname.split('/').slice(0, 3).join('/')}`
+        }
+      } catch { continue }
+    }
+    const direct = html.match(/https?:\/\/(?:www\.)?linkedin\.com\/company\/([a-zA-Z0-9\-_%]{2,80})(?:\/|"|'|&)/)
+    if (direct) return `https://www.linkedin.com/company/${direct[1]}`
+  } catch { /* fall through */ }
+  return null
+}
+
+// Use Bright Data LinkedIn company scraper to get structured company data
+async function scrapeLinkedInCompany(linkedInUrl: string): Promise<LinkedInCompanyResult> {
+  const empty: LinkedInCompanyResult = { name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }
+  const apiToken = process.env.BRIGHTDATA_API_TOKEN
+  const datasetId = process.env.BRIGHTDATA_LINKEDIN_COMPANY_DATASET_ID
+  if (!apiToken || !datasetId) return empty
+
+  try {
+    const res = await fetch(
+      `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${datasetId}&notify=false&include_errors=true`,
+      {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: [{ url: linkedInUrl }] }),
+        signal: AbortSignal.timeout(30000),
+      }
+    )
+    if (!res.ok) return empty
+    const data = await res.json()
+    const p = Array.isArray(data) ? data[0] : data
+    if (!p || p.error) return empty
+
+    // Strip LinkedIn follower prefix from description e.g. "Microsoft | 28M followers on LinkedIn. ..."
+    const rawDesc: string = p.description ?? ''
+    const description = rawDesc.replace(/^[^|]+\|\s*[\d,.]+ followers on LinkedIn\.\s*/i, '').trim() || null
+
+    // employee_count: prefer company_size string, fall back to formatting employees_in_linkedin number
+    let employee_count: string | null = p.company_size ?? null
+    if (!employee_count && p.employees_in_linkedin) {
+      const n = Number(p.employees_in_linkedin)
+      if (!isNaN(n)) employee_count = n >= 1000 ? `${(n / 1000).toFixed(0)}K+` : String(n)
+    }
+
+    return {
+      name: p.name ?? null,
+      description,
+      employee_count,
+      hq: p.headquarters ?? null,
+      logo_url: p.logo ?? null,
+      website_url: p.website ?? null,
+    }
+  } catch (e) {
+    console.error('[company-profile] LinkedIn company scrape error:', e instanceof Error ? e.message : e)
+    return empty
+  }
 }
 
 async function findWebsiteForCompany(name: string): Promise<string | null> {
@@ -334,13 +415,18 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Wikidata lookup — gets website + structured data (revenue, employees, founded, HQ) in parallel with no scraping needed
-    const wikidata = name ? await lookupWikidata(name) : { website: null, revenue: null, employee_count: null, founded_year: null, hq: null }
+    // Run Wikidata + LinkedIn company lookup in parallel
+    const [wikidata, linkedInData] = await Promise.all([
+      name ? lookupWikidata(name) : Promise.resolve({ website: null, revenue: null, employee_count: null, founded_year: null, hq: null }),
+      name ? findLinkedInCompanyUrl(name).then((url) => url ? scrapeLinkedInCompany(url) : Promise.resolve({ name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null })) : Promise.resolve({ name: null, description: null, employee_count: null, hq: null, logo_url: null, website_url: null }),
+    ])
 
-    if (!websiteUrl) websiteUrl = wikidata.website
+    if (!websiteUrl) websiteUrl = linkedInData.website_url || wikidata.website
     if (!websiteUrl) websiteUrl = await findWebsiteForCompany(name!)
 
-    if (!websiteUrl) {
+    // If LinkedIn gave us enough data, we can skip scraping entirely
+    const linkedInHasData = linkedInData.description || linkedInData.hq || linkedInData.employee_count
+    if (!websiteUrl && !linkedInHasData) {
       return NextResponse.json({
         domain, name, description: null, industry: null, sic_code: null,
         sic_description: null,
@@ -352,15 +438,23 @@ export async function GET(request: Request) {
       })
     }
 
-    const scraped = await scrapeCompany(websiteUrl, domain)
+    let scraped: CompanyProfile | null = null
+    if (websiteUrl) scraped = await scrapeCompany(websiteUrl, domain)
 
-    // Merge: scraped wins; Wikidata fills gaps for structured fields
+    // Merge priority: scraped > LinkedIn > Wikidata
     const profile: CompanyProfile = {
-      ...scraped,
-      revenue: scraped.revenue || wikidata.revenue,
-      employee_count: scraped.employee_count || wikidata.employee_count,
-      founded_year: scraped.founded_year || wikidata.founded_year,
-      hq: scraped.hq || wikidata.hq,
+      domain,
+      name: scraped?.name || linkedInData.name || name || null,
+      description: scraped?.description || linkedInData.description || null,
+      industry: scraped?.industry || null,
+      sic_code: scraped?.sic_code || null,
+      sic_description: scraped?.sic_description || null,
+      revenue: scraped?.revenue || wikidata.revenue,
+      employee_count: scraped?.employee_count || linkedInData.employee_count || wikidata.employee_count,
+      founded_year: scraped?.founded_year || wikidata.founded_year,
+      hq: scraped?.hq || linkedInData.hq || wikidata.hq,
+      logo_url: scraped?.logo_url || linkedInData.logo_url || null,
+      website_url: websiteUrl,
     }
 
     supabase.from('company_profiles').upsert({ ...profile, fetched_at: new Date().toISOString() })
