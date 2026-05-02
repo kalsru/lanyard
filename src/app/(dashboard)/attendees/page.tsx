@@ -73,7 +73,7 @@ export default function AttendeesPage() {
     setLoadingInitial(false)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { loadSaved(true) }, [loadSaved])
+  useEffect(() => { loadSaved(false) }, [loadSaved])
 
   async function saveAttendees(attendees: Attendee[], source: string) {
     const supabase = createClient()
