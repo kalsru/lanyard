@@ -5,7 +5,6 @@ export const maxDuration = 120
 type Input = { id: string; name: string; title: string | null; company: string | null; location: string | null }
 type Result = { id: string; linkedin_url: string | null; avatar_url: string | null }
 
-// Search Google via Serper.dev for a LinkedIn profile URL
 async function searchLinkedInUrl(name: string, company: string | null, title: string | null): Promise<string | null> {
   const serperKey = process.env.SERPER_API_KEY
   if (!serperKey) return null
@@ -30,8 +29,6 @@ async function searchLinkedInUrl(name: string, company: string | null, title: st
   return null
 }
 
-// Use Bright Data to scrape a LinkedIn profile URL and return photo only.
-// Name match guards against using the wrong person's photo; the URL itself is trusted from Serper.
 async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string): Promise<string | null> {
   const apiToken = process.env.BRIGHTDATA_API_TOKEN
   const datasetId = process.env.BRIGHTDATA_LINKEDIN_DATASET_ID
@@ -51,7 +48,6 @@ async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string):
     const data = await res.json()
     const results: unknown[] = Array.isArray(data) ? data : [data]
 
-    // Verify name matches to avoid using the wrong person's photo
     const nameLower = attendeeName.toLowerCase()
     const [first, ...rest] = nameLower.split(' ')
     const last = rest[rest.length - 1] ?? ''
@@ -67,22 +63,38 @@ async function scrapeLinkedInProfile(linkedInUrl: string, attendeeName: string):
   } catch { return null }
 }
 
-async function findLinkedIn(attendee: Input): Promise<Result> {
-  // 1. Find LinkedIn URL via Serper — try with company+title, then company only, then name only
+// Find LinkedIn URL only (no Bright Data) — fast path used when photos=false
+async function findLinkedInUrl(attendee: Input): Promise<Result> {
   let linkedin_url = await searchLinkedInUrl(attendee.name, attendee.company, attendee.title)
   if (!linkedin_url) linkedin_url = await searchLinkedInUrl(attendee.name, attendee.company, null)
   if (!linkedin_url) linkedin_url = await searchLinkedInUrl(attendee.name, null, null)
-
   console.log('[linkedin]', linkedin_url ? `Found: ${linkedin_url}` : `No URL for: ${attendee.name}`)
+  return { id: attendee.id, linkedin_url, avatar_url: null }
+}
+
+// Find LinkedIn URL + photo — used on initial import
+async function findLinkedInFull(attendee: Input): Promise<Result> {
+  const { linkedin_url } = await findLinkedInUrl(attendee)
   if (!linkedin_url) return { id: attendee.id, linkedin_url: null, avatar_url: null }
-
-  // 2. Scrape Bright Data for photo only — URL from Serper is trusted
   const avatar_url = await scrapeLinkedInProfile(linkedin_url, attendee.name)
-
   return { id: attendee.id, linkedin_url, avatar_url }
 }
 
+// Run tasks with bounded concurrency
+async function parallel<T>(items: T[], fn: (item: T) => Promise<Result>, concurrency: number): Promise<Result[]> {
+  const results: Result[] = []
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = await Promise.all(items.slice(i, i + concurrency).map(fn))
+    results.push(...batch)
+  }
+  return results
+}
+
 export async function POST(request: Request) {
+  // photos=false → URL-only mode (fast re-enrich); photos=true (default) → full with Bright Data
+  const { searchParams } = new URL(request.url)
+  const photos = searchParams.get('photos') !== 'false'
+
   let body: { attendees?: unknown }
   try {
     body = await request.json()
@@ -94,13 +106,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'attendees must be an array' }, { status: 400 })
   }
 
-  const results: Result[] = []
-  for (const attendee of body.attendees as Input[]) {
-    try {
-      results.push(await findLinkedIn(attendee))
-    } catch (e) {
-      console.error('[linkedin] Error for', attendee.name, ':', e instanceof Error ? e.message : e)
-      results.push({ id: attendee.id, linkedin_url: null, avatar_url: null })
+  const attendees = body.attendees as Input[]
+
+  let results: Result[]
+  if (!photos) {
+    // URL-only: 5 concurrent Serper searches, no Bright Data → fits in 120s for large lists
+    results = await parallel(attendees, findLinkedInUrl, 5)
+  } else {
+    // Full: sequential (Serper + Bright Data per person) — keep for small initial imports
+    results = []
+    for (const attendee of attendees) {
+      try {
+        results.push(await findLinkedInFull(attendee))
+      } catch (e) {
+        console.error('[linkedin] Error for', attendee.name, ':', e instanceof Error ? e.message : e)
+        results.push({ id: attendee.id, linkedin_url: null, avatar_url: null })
+      }
     }
   }
 

@@ -216,7 +216,7 @@ export default function AttendeesPage() {
 
     const toSend = missing.map((a) => ({ id: a.id, name: a.name, title: a.title ?? null, company: a.company ?? null, location: a.location ?? null }))
     try {
-      const res = await fetch('/api/find-linkedin', {
+      const res = await fetch('/api/find-linkedin?photos=false', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ attendees: toSend }),
       })
