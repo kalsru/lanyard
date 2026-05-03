@@ -3,7 +3,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Navbar } from '@/components/dashboard/navbar'
 import { AttendeeCard, type Attendee } from '@/components/dashboard/attendee-card'
-import { CompanyDrawer } from '@/components/dashboard/company-drawer'
 import { Button } from '@/components/ui/button'
 import { createClient } from '@/lib/supabase/client'
 
@@ -35,7 +34,6 @@ export default function AttendeesPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [conferenceName, setConferenceName] = useState('')
   const [pending, setPending] = useState<PendingExtraction | null>(null)
-  const [drawerCompany, setDrawerCompany] = useState<{ name: string; url: string | null } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const loadSaved = useCallback(async () => {
@@ -110,20 +108,6 @@ export default function AttendeesPage() {
       return
     }
     await loadSaved()
-
-    if (!inserted?.length) return
-
-    setExtractState({ status: 'loading', label: `Finding company websites... (${inserted.length} attendees)` })
-
-    const companyRes = await fetch('/api/find-company-url', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ attendees: inserted }),
-    }).then((r) => r.json() as Promise<{ results: { id: string; company_url: string | null }[] }>)
-
-    for (const { id, company_url } of companyRes.results.filter((r) => r.company_url)) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (supabase as any).from('attendees').update({ company_url }).eq('id', id)
-    }
 
     await loadSaved()
   }
@@ -240,7 +224,6 @@ export default function AttendeesPage() {
   })
 
   const isLoading = extractState.status === 'loading'
-  const withCompany = savedAttendees.filter((a) => a.company_url).length
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -258,7 +241,6 @@ export default function AttendeesPage() {
               {[
                 { label: 'Total', value: savedAttendees.length, color: 'bg-white/20' },
                 { label: 'Conferences', value: conferences.length, color: 'bg-indigo-500/40' },
-                { label: 'Company', value: withCompany, color: 'bg-emerald-500/40' },
               ].map(({ label, value, color }) => value > 0 && (
                 <div key={label} className={`${color} backdrop-blur-sm rounded-2xl px-4 py-2 text-center min-w-[72px]`}>
                   <p className="text-2xl font-black leading-none">{value}</p>
@@ -431,8 +413,7 @@ export default function AttendeesPage() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {filteredAttendees.map((attendee) => (
-                <AttendeeCard key={attendee.id} attendee={attendee}
-                  onCompanyClick={(name, url) => setDrawerCompany({ name, url })} />
+                <AttendeeCard key={attendee.id} attendee={attendee} />
               ))}
             </div>
           </>
@@ -447,10 +428,6 @@ export default function AttendeesPage() {
         )}
       </main>
 
-      {drawerCompany && (
-        <CompanyDrawer companyName={drawerCompany.name} companyUrl={drawerCompany.url}
-          onClose={() => setDrawerCompany(null)} />
-      )}
     </div>
   )
 }
