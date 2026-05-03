@@ -64,9 +64,7 @@ export function AttendeeCard({ attendee, onCompanyClick }: { attendee: Attendee;
       : attendee.title.replace(new RegExp(`[\\s\\-–—·|at]+${displayCompany.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i'), '').trim() || null
     : attendee.title
 
-  const linkedInKeywords = [attendee.name, displayCompany, attendee.location].filter(Boolean).join(' ')
-  const linkedInUrl = attendee.linkedin_url
-    ?? `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(linkedInKeywords)}`
+  const linkedInUrl = attendee.linkedin_url ?? null
 
   return (
     <Card className={`group overflow-hidden ring-1 ${ringClass} hover:shadow-xl hover:-translate-y-1 transition-all duration-200`}>
@@ -116,15 +114,17 @@ export function AttendeeCard({ attendee, onCompanyClick }: { attendee: Attendee;
           <p className="text-[11px] text-muted-foreground mb-3">📍 {attendee.location}</p>
         )}
 
-        <a
-          href={linkedInUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-auto flex items-center justify-center gap-1.5 w-full py-2 rounded-xl bg-[#0A66C2] hover:bg-[#004182] text-white text-xs font-bold transition-colors shadow-sm"
-        >
-          <LinkedInIcon />
-          LinkedIn Profile
-        </a>
+        {linkedInUrl && (
+          <a
+            href={linkedInUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-auto flex items-center justify-center gap-1.5 w-full py-2 rounded-xl bg-[#0A66C2] hover:bg-[#004182] text-white text-xs font-bold transition-colors shadow-sm"
+          >
+            <LinkedInIcon />
+            LinkedIn Profile
+          </a>
+        )}
       </div>
     </Card>
   )
