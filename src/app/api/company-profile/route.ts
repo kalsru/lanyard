@@ -6,13 +6,6 @@ export const maxDuration = 60
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const SKIP_DOMAINS = new Set([
-  'google.com', 'bing.com', 'yahoo.com', 'linkedin.com', 'facebook.com',
-  'twitter.com', 'x.com', 'instagram.com', 'youtube.com', 'wikipedia.org',
-  'bloomberg.com', 'crunchbase.com', 'glassdoor.com', 'indeed.com',
-  'yelp.com', 'zoominfo.com', 'dnb.com', 'pitchbook.com',
-])
-
 export type CompanyProfile = {
   domain: string
   name: string | null
@@ -38,44 +31,6 @@ function getSupabase() {
 
 function extractDomain(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url }
-}
-
-function isSkipped(href: string): boolean {
-  try {
-    const bare = new URL(href).hostname.replace(/^www\./, '')
-    return SKIP_DOMAINS.has(bare) || [...SKIP_DOMAINS].some((d) => bare.endsWith('.' + d))
-  } catch { return true }
-}
-
-async function serperSearch(q: string): Promise<{ title: string; link: string }[]> {
-  const key = process.env.SERPER_API_KEY
-  if (!key) return []
-  try {
-    const res = await fetch('https://google.serper.dev/search', {
-      method: 'POST',
-      headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q, num: 5 }),
-      signal: AbortSignal.timeout(8000),
-    })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data.organic ?? []
-  } catch { return [] }
-}
-
-async function findWebsiteForCompany(name: string): Promise<string | null> {
-  const results = await serperSearch(`"${name}" official website`)
-  for (const r of results) {
-    if (r.link && !isSkipped(r.link)) {
-      try { const { protocol, hostname } = new URL(r.link); return `${protocol}//${hostname}` } catch { continue }
-    }
-  }
-  const guessed = name.toLowerCase().replace(/[^a-z0-9]+/g, '') + '.com'
-  try {
-    const res = await fetch(`https://${guessed}`, { method: 'HEAD', signal: AbortSignal.timeout(5000) })
-    if (res.ok || res.status < 400) return `https://${guessed}`
-  } catch { /* not reachable */ }
-  return null
 }
 
 async function classifyWithClaude(companyName: string): Promise<{ industry: string | null; sic_code: string | null; sic_description: string | null }> {
@@ -125,8 +80,6 @@ export async function GET(request: Request) {
   }
 
   try {
-    if (!websiteUrl && name) websiteUrl = await findWebsiteForCompany(name)
-
     const classification = await classifyWithClaude(name ?? domain)
 
     const profile: CompanyProfile = {

@@ -113,23 +113,13 @@ export default function AttendeesPage() {
 
     if (!inserted?.length) return
 
-    setExtractState({ status: 'loading', label: `Finding LinkedIn & company profiles... (${inserted.length} attendees)` })
+    setExtractState({ status: 'loading', label: `Finding company websites... (${inserted.length} attendees)` })
 
-    const [linkedinRes, companyRes] = await Promise.all([
-      fetch('/api/find-linkedin', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attendees: inserted }),
-      }).then((r) => r.json() as Promise<{ results: { id: string; linkedin_url: string | null; avatar_url: string | null }[] }>),
-      fetch('/api/find-company-url', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attendees: inserted }),
-      }).then((r) => r.json() as Promise<{ results: { id: string; company_url: string | null }[] }>),
-    ])
+    const companyRes = await fetch('/api/find-company-url', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attendees: inserted }),
+    }).then((r) => r.json() as Promise<{ results: { id: string; company_url: string | null }[] }>)
 
-    for (const { id, linkedin_url, avatar_url } of linkedinRes.results.filter((r) => r.linkedin_url)) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (supabase as any).from('attendees').update({ linkedin_url, ...(avatar_url && { avatar_url }) }).eq('id', id)
-    }
     for (const { id, company_url } of companyRes.results.filter((r) => r.company_url)) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (supabase as any).from('attendees').update({ company_url }).eq('id', id)
@@ -208,28 +198,6 @@ export default function AttendeesPage() {
     if (inputRef.current) inputRef.current.value = ''
   }
 
-  async function handleReEnrich() {
-    const supabase = createClient()
-    const missing = savedAttendees.filter((a) => !a.linkedin_url)
-    if (!missing.length) return
-    setExtractState({ status: 'loading', label: `Re-enriching ${missing.length} attendees without LinkedIn…` })
-
-    const toSend = missing.map((a) => ({ id: a.id, name: a.name, title: a.title ?? null, company: a.company ?? null, location: a.location ?? null }))
-    try {
-      const res = await fetch('/api/find-linkedin', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attendees: toSend }),
-      })
-      const { results } = await res.json() as { results: { id: string; linkedin_url: string | null; avatar_url: string | null }[] }
-      for (const { id, linkedin_url, avatar_url } of results.filter((r) => r.linkedin_url)) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (supabase as any).from('attendees').update({ linkedin_url, ...(avatar_url && { avatar_url }) }).eq('id', id)
-      }
-      await loadSaved()
-    } catch { /* ignore */ }
-    setExtractState({ status: 'idle' })
-  }
-
   async function handleClearAll() {
     const supabase = createClient()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -272,7 +240,6 @@ export default function AttendeesPage() {
   })
 
   const isLoading = extractState.status === 'loading'
-  const withLinkedIn = savedAttendees.filter((a) => a.linkedin_url).length
   const withCompany = savedAttendees.filter((a) => a.company_url).length
 
   return (
@@ -291,7 +258,6 @@ export default function AttendeesPage() {
               {[
                 { label: 'Total', value: savedAttendees.length, color: 'bg-white/20' },
                 { label: 'Conferences', value: conferences.length, color: 'bg-indigo-500/40' },
-                { label: 'LinkedIn', value: withLinkedIn, color: 'bg-blue-500/40' },
                 { label: 'Company', value: withCompany, color: 'bg-emerald-500/40' },
               ].map(({ label, value, color }) => value > 0 && (
                 <div key={label} className={`${color} backdrop-blur-sm rounded-2xl px-4 py-2 text-center min-w-[72px]`}>
@@ -456,12 +422,6 @@ export default function AttendeesPage() {
                 <p className="text-sm text-slate-500 font-medium">
                   {searchQuery || conferenceFilter !== 'all' ? `${filteredAttendees.length} of ` : ''}{savedAttendees.length} attendees
                 </p>
-                {savedAttendees.some((a) => !a.linkedin_url) && (
-                  <button onClick={handleReEnrich} disabled={isLoading}
-                    className="text-xs text-blue-600 hover:text-blue-800 font-semibold px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50">
-                    Re-enrich LinkedIn
-                  </button>
-                )}
                 <button onClick={handleClearAll}
                   className="text-xs text-red-500 hover:text-red-700 font-semibold px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors">
                   Clear all
